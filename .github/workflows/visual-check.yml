@@ -1,0 +1,76 @@
+name: Build PR 6074 for isolated visual check
+on:
+  push:
+    branches: [codex/visual-pr-6074]
+permissions:
+  contents: read
+jobs:
+  desktop:
+    if: github.repository == 'rebojar/zotero'
+    runs-on: windows-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Enable source symlinks on the disposable runner
+        run: git config --global core.symlinks true
+      - uses: actions/checkout@v4
+        with:
+          ref: 15570c1e9bd61054e180cd049f235cb3c4f028c1
+          submodules: recursive
+          lfs: true
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install build prerequisites
+        run: choco install zip --no-progress -y
+      - name: Fetch the runtime specified by the PR
+        run: app/scripts/fetch_xulrunner -p w -a x64
+      - name: Install Node dependencies
+        run: npm ci
+      - name: Recreate source links after installing dependencies
+        shell: pwsh
+        run: |
+          $workspaceRoot = (Resolve-Path -LiteralPath $env:GITHUB_WORKSPACE).Path
+          git ls-files -s | ForEach-Object {
+            if ($_ -match '^120000 .*\t(.+)$') {
+              $relative = $Matches[1]
+              $targetPath = [IO.Path]::GetFullPath((Join-Path $workspaceRoot $relative))
+              if (-not $targetPath.StartsWith($workspaceRoot + [IO.Path]::DirectorySeparatorChar)) { throw 'Outside workspace' }
+              Remove-Item -LiteralPath $targetPath -Force
+              git checkout -- $relative
+              if ($LASTEXITCODE) { throw 'Could not recreate source link' }
+            }
+          }
+      - name: Build Zotero source
+        run: npm run build
+        env:
+          NODE_OPTIONS: --openssl-legacy-provider
+      - name: Build desktop without test instrumentation or installer
+        run: app/scripts/dir_build -p w -a x64 -f
+      - name: Record provenance and archive the standalone directory
+        shell: pwsh
+        run: |
+          $commit = git rev-parse HEAD
+          if ($commit -ne '15570c1e9bd61054e180cd049f235cb3c4f028c1') { throw 'Unexpected source revision' }
+          $manifest = @{
+            source = 'https://github.com/rebojar/zotero'
+            commit = $commit
+            pullRequest = 'https://github.com/zotero/zotero/pull/6074'
+            workflowRun = "https://github.com/rebojar/zotero/actions/runs/$env:GITHUB_RUN_ID"
+            architecture = 'x64'
+            testInstrumentation = $false
+            executableSHA256 = (Get-FileHash app/staging/Zotero_win-x64/zotero.exe).Hash
+            appOmniSHA256 = (Get-FileHash app/staging/Zotero_win-x64/app/omni.ja).Hash
+            submodules = @(git submodule status --recursive)
+          }
+          $manifest | ConvertTo-Json -Depth 4 | Set-Content -Encoding utf8 app/staging/Zotero_win-x64/PR-6074-BUILD.json
+          Compress-Archive -Path app/staging/Zotero_win-x64 -DestinationPath Zotero-PR6074-15570c1-win-x64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Zotero-PR6074-15570c1-win-x64
+          path: Zotero-PR6074-15570c1-win-x64.zip
+          retention-days: 3
+          if-no-files-found: error

@@ -1,6 +1,7 @@
 name: CI
 on:
   push:
+    branches-ignore: [codex/visual-pr-6074]
   pull_request:
   workflow_dispatch:
   schedule:
